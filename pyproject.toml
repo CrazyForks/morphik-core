@@ -41,6 +41,7 @@ dependencies = [
     "psycopg2-binary>=2.9.9",
     "pydantic>=2.11.4",
     "pydantic-settings>=2.9.1",
+    "pymupdf==1.25.5",
     "pytest>=8.3.5",
     "pytest-asyncio>=0.26.0",
     "python-multipart>=0.0.20",
@@ -53,11 +54,17 @@ dependencies = [
     "torch==2.5.1",
     "torchaudio==2.5.1",
     "torchvision==0.20.1",
+    "tqdm>=4.67.1",
     "transformers==4.51.3",
     "twine>=6.1.0",
     "ty>=0.0.1a6",
     "unstructured[pdf]>=0.17.2",
     "uvicorn>=0.34.2",
+    # --- profiling & analysis ---
+    "yappi>=1.6.0",
+    "snakeviz>=2.2.0",
+    "pyprof2calltree>=1.4.5",
+    "line_profiler>=4.1.2",
 ]
 
 [tool.black]
