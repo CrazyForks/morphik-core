@@ -563,6 +563,24 @@ class DocumentService:
             logger.error(f"Error during parallel chunk retrieval: {e}", exc_info=True)
             return []
 
+        # Create a mapping of original scores from ChunkSource objects (O(n) time)
+        score_map = {
+            (source.document_id, source.chunk_number): source.score 
+            for source in authorized_sources 
+            if source.score is not None
+        }
+        
+        # Apply original scores to the retrieved chunks (O(m) time with O(1) lookups)
+        for chunk in chunks:
+            key = (chunk.document_id, chunk.chunk_number)
+            if key in score_map:
+                chunk.score = score_map[key]
+                logger.debug(f"Restored score {chunk.score} for chunk {key}")
+
+        # Sort chunks by score in descending order (highest score first)
+        chunks.sort(key=lambda x: x.score, reverse=True)
+        logger.debug(f"Sorted {len(chunks)} chunks by score")
+
         # Convert to chunk results
         results = await self._create_chunk_results(auth, chunks)
         logger.info(f"Batch retrieved {len(results)} chunks out of {len(chunk_ids)} requested")
@@ -589,6 +607,7 @@ class DocumentService:
         chat_history: Optional[List[ChatMessage]] = None,
         perf_tracker: Optional[Any] = None,  # Performance tracker from API layer
         stream_response: Optional[bool] = False,
+        llm_config: Optional[Dict[str, Any]] = None,
     ) -> Union[CompletionResponse, tuple[AsyncGenerator[str, None], List[ChunkSource]]]:
         """Generate completion using relevant chunks as context.
 
@@ -646,6 +665,7 @@ class DocumentService:
                 prompt_overrides=prompt_overrides,
                 folder_name=folder_name,
                 end_user_id=end_user_id,
+                stream_response=stream_response,
             )
 
         if not perf_tracker:
@@ -719,6 +739,7 @@ class DocumentService:
             schema=schema,
             chat_history=chat_history,
             stream_response=stream_response,
+            llm_config=llm_config,
         )
 
         response = await self.completion_model.complete(request)

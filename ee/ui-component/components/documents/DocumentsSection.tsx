@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import DeleteConfirmationModal from "./DeleteConfirmationModal";
 
-import { Document, Folder } from "@/components/types";
+import { Document, Folder, FolderSummary } from "@/components/types";
 
 // Custom hook for drag and drop functionality
 function useDragAndDrop({ onDrop, disabled = false }: { onDrop: (files: File[]) => void; disabled?: boolean }) {
@@ -77,7 +77,6 @@ interface DocumentsSectionProps {
   apiBaseUrl: string;
   authToken: string | null;
   initialFolder?: string | null;
-  setSidebarCollapsed?: (collapsed: boolean) => void;
 
   // Callback props provided by parent
   onDocumentUpload?: (fileName: string, fileSize: number) => void;
@@ -86,6 +85,7 @@ interface DocumentsSectionProps {
   onFolderClick?: (folderName: string | null) => void;
   onFolderCreate?: (folderName: string) => void;
   onRefresh?: () => void;
+  onViewInPDFViewer?: (documentId: string) => void; // Add PDF viewer navigation
 }
 
 // Debug render counter
@@ -95,7 +95,6 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
   apiBaseUrl,
   authToken,
   initialFolder = null,
-  setSidebarCollapsed,
   // Destructure new props
   onDocumentUpload,
   onDocumentDelete,
@@ -103,6 +102,7 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
   onFolderClick,
   onFolderCreate,
   onRefresh,
+  onViewInPDFViewer,
 }) => {
   // Increment render counter for debugging
   renderCount++;
@@ -121,7 +121,7 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
 
   // State for documents and folders
   const [documents, setDocuments] = useState<Document[]>([]);
-  const [folders, setFolders] = useState<Folder[]>([]);
+  const [folders, setFolders] = useState<FolderSummary[]>([]);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(initialFolder);
   const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
   const [selectedDocuments, setSelectedDocuments] = useState<string[]>([]);
@@ -149,6 +149,9 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
     },
     disabled: !selectedFolder || selectedFolder === null,
   });
+
+  // Cache for folder details (document_ids) to avoid duplicate network calls
+  const folderDetailsCache = useRef<Record<string, string[]>>({});
 
   // No need for a separate header function, use authToken directly
 
@@ -200,33 +203,46 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
           console.log(`fetchDocuments: Fetching documents for folder: ${selectedFolder}`);
           const targetFolder = folders.find(folder => folder.name === selectedFolder);
 
-          if (targetFolder && Array.isArray(targetFolder.document_ids) && targetFolder.document_ids.length > 0) {
-            // Folder found and has documents, fetch them by ID
-            console.log(
-              `fetchDocuments: Folder found with ${targetFolder.document_ids.length} IDs. Fetching details...`
-            );
-            const response = await fetch(`${effectiveApiUrl}/batch/documents`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-              },
-              body: JSON.stringify({ document_ids: targetFolder.document_ids }),
-            });
-            if (!response.ok) {
-              throw new Error(`Failed to fetch batch documents: ${response.statusText}`);
-            }
-            documentsToFetch = await response.json();
-            console.log(`fetchDocuments: Fetched details for ${documentsToFetch.length} documents`);
-          } else {
-            // Folder not found, or folder is empty
-            if (targetFolder) {
-              console.log(`fetchDocuments: Folder ${selectedFolder} found but is empty.`);
-            } else {
-              console.log(`fetchDocuments: Folder ${selectedFolder} not found in current state.`);
-            }
-            // In either case, the folder contains no documents to display
+          if (!targetFolder) {
+            console.log(`fetchDocuments: Folder ${selectedFolder} not found in summary list.`);
             documentsToFetch = [];
+          } else {
+            // Resolve the document_ids – first from cache, otherwise fetch detail
+            let docIds = folderDetailsCache.current[targetFolder.id];
+
+            if (!docIds) {
+              console.log(`fetchDocuments: Fetching folder details for id=${targetFolder.id}`);
+              const detailResp = await fetch(`${effectiveApiUrl}/folders/${targetFolder.id}`, {
+                headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+              });
+              if (!detailResp.ok) {
+                throw new Error(`Failed to fetch folder detail: ${detailResp.statusText}`);
+              }
+              const detail: Folder = await detailResp.json();
+              docIds = Array.isArray(detail.document_ids) ? detail.document_ids : [];
+              // Cache for future use
+              folderDetailsCache.current[targetFolder.id] = docIds;
+            }
+
+            if (docIds.length === 0) {
+              console.log(`fetchDocuments: Folder ${selectedFolder} is empty.`);
+              documentsToFetch = [];
+            } else {
+              console.log(`fetchDocuments: Fetching ${docIds.length} documents via batch API`);
+              const response = await fetch(`${effectiveApiUrl}/batch/documents`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+                },
+                body: JSON.stringify({ document_ids: docIds }),
+              });
+              if (!response.ok) {
+                throw new Error(`Failed to fetch batch documents: ${response.statusText}`);
+              }
+              documentsToFetch = await response.json();
+              console.log(`fetchDocuments: Fetched details for ${documentsToFetch.length} documents`);
+            }
           }
         }
 
@@ -267,7 +283,7 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
     console.log("fetchFolders called");
     setFoldersLoading(true);
     try {
-      const response = await fetch(`${effectiveApiUrl}/folders`, {
+      const response = await fetch(`${effectiveApiUrl}/folders/summary`, {
         method: "GET",
         headers: {
           ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
@@ -276,7 +292,7 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
       if (!response.ok) {
         throw new Error(`Failed to fetch folders: ${response.statusText}`);
       }
-      const data = await response.json();
+      const data = (await response.json()) as FolderSummary[];
       console.log(`Fetched ${data.length} folders`);
       setFolders(data);
     } catch (err) {
@@ -376,8 +392,12 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
   // Fine-grained polling – update status of documents that are processing
   // ---------------------------------------------------------------------
   useEffect(() => {
-    // Identify docs still processing
-    const processingDocs = documents.filter(doc => doc.system_metadata?.status === "processing");
+    // Identify docs still processing or recently failed (to capture error info)
+    const processingDocs = documents.filter(
+      doc =>
+        doc.system_metadata?.status === "processing" ||
+        (doc.system_metadata?.status === "failed" && !doc.system_metadata?.error)
+    );
 
     // If none, skip polling
     if (processingDocs.length === 0) {
@@ -402,6 +422,7 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
                 id: data.document_id as string,
                 status: data.status as string,
                 updatedAt: data.updated_at as string | undefined,
+                error: data.error as string | undefined,
               };
             } catch (err) {
               console.error("Status poll error for", doc.external_id, err);
@@ -414,13 +435,14 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
         setDocuments(prevDocs =>
           prevDocs.map(d => {
             const upd = updates.find(u => u && u.id === d.external_id);
-            if (upd && upd.status && upd.status !== d.system_metadata?.status) {
+            if (upd && upd.status && (upd.status !== d.system_metadata?.status || upd.error)) {
               return {
                 ...d,
                 system_metadata: {
                   ...d.system_metadata,
                   status: upd.status,
                   updated_at: upd.updatedAt ?? d.system_metadata?.updated_at,
+                  ...(upd.error && { error: upd.error }),
                 },
               } as Document;
             }
@@ -436,14 +458,15 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
     return () => clearInterval(intervalId);
   }, [documents, effectiveApiUrl, authToken]);
 
-  // Collapse sidebar when a folder is selected
-  useEffect(() => {
-    if (selectedFolder !== null && setSidebarCollapsed) {
-      setSidebarCollapsed(true);
-    } else if (setSidebarCollapsed) {
-      setSidebarCollapsed(false);
-    }
-  }, [selectedFolder, setSidebarCollapsed]);
+  // Removed automatic sidebar collapse when folder is selected
+  // The sidebar should only be controlled by the dedicated open/close button
+  // useEffect(() => {
+  //   if (selectedFolder !== null && setSidebarCollapsed) {
+  //     setSidebarCollapsed(true);
+  //   } else if (setSidebarCollapsed) {
+  //     setSidebarCollapsed(false);
+  //   }
+  // }, [selectedFolder, setSidebarCollapsed]);
 
   // Fetch a specific document by ID
   const fetchDocument = async (documentId: string) => {
@@ -525,6 +548,62 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
     setItemToDelete(documentId);
     setItemsToDeleteCount(0); // Ensure this is 0 for single delete scenario
     setShowDeleteModal(true);
+  };
+
+  // Handle document download
+  const handleDownloadDocument = async (documentId: string) => {
+    try {
+      // Get the download URL for this document
+      const downloadUrlEndpoint = `${effectiveApiUrl}/documents/${documentId}/download_url`;
+      console.log("Fetching download URL from:", downloadUrlEndpoint);
+
+      const downloadUrlResponse = await fetch(downloadUrlEndpoint, {
+        headers: {
+          ...(authToken && { Authorization: `Bearer ${authToken}` }),
+        },
+      });
+
+      if (!downloadUrlResponse.ok) {
+        console.error("Download URL request failed:", downloadUrlResponse.status, downloadUrlResponse.statusText);
+        throw new Error("Failed to get download URL");
+      }
+
+      const downloadData = await downloadUrlResponse.json();
+      console.log("Download URL response:", downloadData);
+
+      let downloadUrl = downloadData.download_url;
+
+      // Check if it's a local file URL (file://) which browsers can't access
+      if (downloadUrl.startsWith("file://")) {
+        console.log("Detected file:// URL, switching to direct file endpoint");
+        // Use our direct file endpoint instead for local storage
+        downloadUrl = `${effectiveApiUrl}/documents/${documentId}/file`;
+      }
+
+      console.log("Final download URL:", downloadUrl);
+
+      // Create a temporary link to trigger download
+      const link = window.document.createElement("a");
+      link.href = downloadUrl;
+
+      // Get the document name for the download
+      const docToDownload = documents.find(doc => doc.external_id === documentId);
+      if (docToDownload?.filename) {
+        link.download = docToDownload.filename;
+      }
+
+      window.document.body.appendChild(link);
+      link.click();
+      window.document.body.removeChild(link);
+
+      console.log("Download initiated successfully");
+    } catch (error) {
+      console.error("Error downloading document:", error);
+      showAlert("Error downloading document. Please try again.", {
+        type: "error",
+        duration: 3000,
+      });
+    }
   };
 
   const confirmDeleteSingleDocument = async () => {
@@ -1289,6 +1368,10 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
                   apiBaseUrl={effectiveApiUrl}
                   authToken={authToken}
                   selectedFolder={selectedFolder}
+                  onViewInPDFViewer={onViewInPDFViewer}
+                  onDownloadDocument={handleDownloadDocument}
+                  onDeleteDocument={handleDeleteDocument}
+                  folders={folders}
                 />
               </div>
             )}
@@ -1307,6 +1390,7 @@ const DocumentsSection: React.FC<DocumentsSectionProps> = ({
                 refreshFolders={fetchFolders}
                 loading={loading}
                 onClose={() => setSelectedDocument(null)}
+                onViewInPDFViewer={onViewInPDFViewer}
               />
             </div>
           )}

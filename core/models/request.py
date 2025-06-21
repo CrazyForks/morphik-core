@@ -48,6 +48,10 @@ class CompletionQueryRequest(RetrieveRequest):
         False,
         description="Whether to stream the response back in chunks",
     )
+    llm_config: Optional[Dict[str, Any]] = Field(
+        None,
+        description="LiteLLM-compatible model configuration (e.g., model name, API key, base URL)",
+    )
 
 
 class IngestTextRequest(BaseModel):
@@ -151,3 +155,7 @@ class AgentQueryRequest(BaseModel):
     """Request model for agent queries"""
 
     query: str = Field(..., description="Natural language query for the Morphik agent")
+    chat_id: Optional[str] = Field(
+        None,
+        description="Optional chat session ID for persisting conversation history",
+    )
