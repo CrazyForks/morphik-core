@@ -2,7 +2,7 @@
 
 import React from "react";
 import { Button } from "@/components/ui/button";
-import { PlusCircle, ArrowLeft, Trash2 } from "lucide-react";
+import { PlusCircle, X } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -15,12 +15,16 @@ import {
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Folder } from "@/components/types";
-import { useRouter, usePathname } from "next/navigation";
+import { FolderSummary, Document } from "@/components/types";
 import Image from "next/image";
+import DeleteConfirmationModal from "@/components/documents/DeleteConfirmationModal";
+import BreadcrumbNavigation from "./shared/BreadcrumbNavigation";
+import WorkflowDialogs from "./shared/WorkflowDialogs";
+import { EmptyFolders } from "./shared/EmptyStates";
+import { useWorkflowManagement, useFolderNavigation, useDeleteConfirmation } from "./shared/CommonHooks";
 
 interface FolderListProps {
-  folders: Folder[];
+  folders: FolderSummary[];
   selectedFolder: string | null;
   setSelectedFolder: (folderName: string | null) => void;
   apiBaseUrl: string;
@@ -34,9 +38,11 @@ interface FolderListProps {
   setShowUploadDialog?: (show: boolean) => void;
   uploadDialogComponent?: React.ReactNode;
   onFolderCreate?: (folderName: string) => void;
+  unorganizedDocuments?: Document[];
+  onDocumentClick?: (document: Document) => void;
 }
 
-const FolderList: React.FC<FolderListProps> = ({
+const FolderList: React.FC<FolderListProps> = React.memo(function FolderList({
   folders,
   selectedFolder,
   setSelectedFolder,
@@ -49,25 +55,89 @@ const FolderList: React.FC<FolderListProps> = ({
   handleDeleteMultipleDocuments,
   uploadDialogComponent,
   onFolderCreate,
-}) => {
-  const router = useRouter();
-  const pathname = usePathname();
+  unorganizedDocuments = [],
+  onDocumentClick,
+}) {
   const [showNewFolderDialog, setShowNewFolderDialog] = React.useState(false);
   const [newFolderName, setNewFolderName] = React.useState("");
   const [newFolderDescription, setNewFolderDescription] = React.useState("");
   const [isCreatingFolder, setIsCreatingFolder] = React.useState(false);
 
-  // Function to update both state and URL
-  const updateSelectedFolder = (folderName: string | null) => {
-    setSelectedFolder(folderName);
+  // Use shared hooks
+  const { updateSelectedFolder } = useFolderNavigation(setSelectedFolder);
+  const {
+    folderWorkflows,
+    loadingWorkflows,
+    showWorkflowDialog,
+    setShowWorkflowDialog,
+    availableWorkflows,
+    showAddWorkflowDialog,
+    setShowAddWorkflowDialog,
+    selectedWorkflowToAdd,
+    setSelectedWorkflowToAdd,
+    fetchFolderWorkflows,
+    fetchAvailableWorkflows,
+    addWorkflow,
+    removeWorkflow,
+    openWorkflowDialog,
+  } = useWorkflowManagement(apiBaseUrl, authToken, selectedFolder, folders);
 
-    // Update URL to reflect the selected folder
-    if (folderName) {
-      router.push(`${pathname}?folder=${encodeURIComponent(folderName)}`);
-    } else {
-      router.push(pathname);
+  const {
+    showDeleteModal,
+    setShowDeleteModal,
+    itemToDelete: folderToDelete,
+    setItemToDelete: setFolderToDelete,
+    isDeletingItem: isDeletingFolder,
+    setIsDeletingItem: setIsDeletingFolder,
+    openDeleteModal,
+    closeDeleteModal,
+  } = useDeleteConfirmation();
+
+  // Handle folder deletion
+  const handleDeleteFolder = React.useCallback(async () => {
+    if (!folderToDelete) return;
+
+    setIsDeletingFolder(true);
+    try {
+      const response = await fetch(`${apiBaseUrl}/folders/${folderToDelete}`, {
+        method: "DELETE",
+        headers: {
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+      });
+
+      if (response.ok) {
+        // Refresh folders list
+        if (refreshAction) {
+          refreshAction();
+        }
+        // If the deleted folder was selected, switch to "all"
+        if (selectedFolder === folderToDelete) {
+          updateSelectedFolder("all");
+        }
+      } else {
+        const error = await response.text();
+        alert(`Failed to delete folder: ${error}`);
+      }
+    } catch (error) {
+      console.error("Failed to delete folder:", error);
+      alert("Failed to delete folder. Please try again.");
+    } finally {
+      setIsDeletingFolder(false);
+      setShowDeleteModal(false);
+      setFolderToDelete(null);
     }
-  };
+  }, [
+    folderToDelete,
+    apiBaseUrl,
+    authToken,
+    refreshAction,
+    selectedFolder,
+    updateSelectedFolder,
+    setFolderToDelete,
+    setIsDeletingFolder,
+    setShowDeleteModal,
+  ]);
 
   const handleCreateFolder = async () => {
     if (!newFolderName.trim()) return;
@@ -103,7 +173,7 @@ const FolderList: React.FC<FolderListProps> = ({
       setNewFolderDescription("");
 
       // Refresh folder list - use a fresh fetch
-      await refreshFolders();
+      refreshFolders();
 
       // Auto-select this newly created folder so user can immediately add files to it
       // This ensures we start with a clean empty folder view
@@ -118,79 +188,40 @@ const FolderList: React.FC<FolderListProps> = ({
     }
   };
 
-  // If we're viewing a specific folder or all documents, show back button and folder title
+  // If we're viewing a specific folder or all documents, show breadcrumb navigation
   if (selectedFolder !== null) {
     return (
-      <div className="mb-4">
-        <div className="flex items-center justify-between py-2">
-          <div className="flex items-center gap-4">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="rounded-full hover:bg-muted/50"
-              onClick={() => updateSelectedFolder(null)}
-            >
-              <ArrowLeft size={18} />
-            </Button>
-            <div className="flex items-center">
-              {selectedFolder === "all" ? (
-                <span className="mr-3 text-3xl" aria-hidden="true">
-                  📄
-                </span>
-              ) : (
-                <Image src="/icons/folder-icon.png" alt="Folder" width={32} height={32} className="mr-3" />
-              )}
-              <h2 className="text-xl font-medium">{selectedFolder === "all" ? "All Documents" : selectedFolder}</h2>
-            </div>
+      <div>
+        <BreadcrumbNavigation
+          selectedFolder={selectedFolder}
+          onNavigateHome={() => updateSelectedFolder(null)}
+          onOpenWorkflows={openWorkflowDialog}
+          workflowCount={folderWorkflows.length}
+          selectedDocuments={selectedDocuments}
+          onDeleteMultiple={handleDeleteMultipleDocuments}
+          refreshAction={refreshAction}
+          uploadDialogComponent={uploadDialogComponent}
+        />
 
-            {/* Show action buttons if documents are selected */}
-            {selectedDocuments && selectedDocuments.length > 0 && (
-              <div className="ml-4 flex gap-2">
-                {/* Delete button */}
-                {handleDeleteMultipleDocuments && (
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={handleDeleteMultipleDocuments}
-                    className="h-8 w-8 border-red-200 text-red-500 hover:border-red-300 hover:bg-red-50"
-                    title={`Delete ${selectedDocuments.length} selected document${selectedDocuments.length > 1 ? "s" : ""}`}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Action buttons */}
-          <div className="flex items-center gap-2">
-            {refreshAction && (
-              <Button variant="outline" onClick={refreshAction} className="flex items-center" title="Refresh documents">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  className="mr-1"
-                >
-                  <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
-                  <path d="M21 3v5h-5"></path>
-                  <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
-                  <path d="M8 16H3v5"></path>
-                </svg>
-                Refresh
-              </Button>
-            )}
-
-            {/* Upload dialog component */}
-            {uploadDialogComponent}
-          </div>
-        </div>
+        <WorkflowDialogs
+          showWorkflowDialog={showWorkflowDialog}
+          setShowWorkflowDialog={setShowWorkflowDialog}
+          showAddWorkflowDialog={showAddWorkflowDialog}
+          setShowAddWorkflowDialog={setShowAddWorkflowDialog}
+          folderWorkflows={folderWorkflows}
+          loadingWorkflows={loadingWorkflows}
+          availableWorkflows={availableWorkflows}
+          selectedWorkflowToAdd={selectedWorkflowToAdd}
+          setSelectedWorkflowToAdd={setSelectedWorkflowToAdd}
+          selectedFolder={selectedFolder}
+          apiBaseUrl={apiBaseUrl}
+          authToken={authToken}
+          onFetchFolderWorkflows={fetchFolderWorkflows}
+          onFetchAvailableWorkflows={fetchAvailableWorkflows}
+          onAddWorkflow={addWorkflow}
+          onRemoveWorkflow={removeWorkflow}
+          folders={folders}
+        />
       </div>
     );
   }
@@ -280,12 +311,42 @@ const FolderList: React.FC<FolderListProps> = ({
           </span>
         </div>
 
+        {/* Render unorganized documents */}
+        {unorganizedDocuments.map(document => (
+          <div
+            key={document.external_id}
+            className="group flex cursor-pointer flex-col items-center"
+            onClick={() => onDocumentClick?.(document)}
+          >
+            <div className="mb-2 flex h-16 w-16 items-center justify-center transition-transform group-hover:scale-110">
+              <span className="text-4xl" aria-hidden="true">
+                📄
+              </span>
+            </div>
+            <span className="w-full max-w-[100px] truncate text-center text-sm font-medium transition-colors group-hover:text-primary">
+              {document.filename || document.external_id}
+            </span>
+          </div>
+        ))}
+
         {folders.map(folder => (
           <div
             key={folder.name}
-            className="group flex cursor-pointer flex-col items-center"
+            className="group relative flex cursor-pointer flex-col items-center"
             onClick={() => updateSelectedFolder(folder.name)}
           >
+            {/* Delete button */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute -right-2 -top-2 z-10 h-6 w-6 rounded-full bg-background opacity-0 shadow-sm transition-opacity hover:bg-destructive hover:text-destructive-foreground group-hover:opacity-100"
+              onClick={e => {
+                e.stopPropagation();
+                openDeleteModal(folder.name);
+              }}
+            >
+              <X className="h-3 w-3" />
+            </Button>
             <div className="mb-2 flex h-16 w-16 items-center justify-center transition-transform group-hover:scale-110">
               <Image src="/icons/folder-icon.png" alt="Folder" width={64} height={64} className="object-contain" />
             </div>
@@ -296,23 +357,18 @@ const FolderList: React.FC<FolderListProps> = ({
         ))}
       </div>
 
-      {folders.length === 0 && !loading && (
-        <div className="mt-4 flex flex-col items-center justify-center p-8">
-          <Image src="/icons/folder-icon.png" alt="Folder" width={80} height={80} className="mb-3 opacity-50" />
-          <p className="text-sm text-muted-foreground">No folders yet. Create one to organize your documents.</p>
-        </div>
-      )}
+      {folders.length === 0 && <EmptyFolders loading={loading} />}
 
-      {loading && folders.length === 0 && (
-        <div className="mt-4 flex items-center justify-center p-8">
-          <div className="flex items-center space-x-2">
-            <div className="h-5 w-5 animate-spin rounded-full border-b-2 border-primary"></div>
-            <p className="text-sm text-muted-foreground">Loading folders...</p>
-          </div>
-        </div>
-      )}
+      {/* Delete Confirmation Modal */}
+      <DeleteConfirmationModal
+        isOpen={showDeleteModal}
+        onClose={closeDeleteModal}
+        onConfirm={handleDeleteFolder}
+        itemName={folderToDelete || undefined}
+        loading={isDeletingFolder}
+      />
     </div>
   );
-};
+});
 
 export default FolderList;

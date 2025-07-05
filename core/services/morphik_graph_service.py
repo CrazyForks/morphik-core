@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Union
 
 import httpx
 
@@ -142,28 +142,8 @@ class MorphikGraphService:
 
         # Validation is now handled by type annotations
 
-        # Create a new graph with authorization info
-        access_control = {
-            "readers": [auth.entity_id],
-            "writers": [auth.entity_id],
-            "admins": [auth.entity_id],
-        }
-
-        # Add user_id to access_control if present (for proper user_id scoping)
-        if auth.user_id:
-            # User ID must be provided as a list to match the Graph model's type constraints
-            access_control["user_id"] = [auth.user_id]
-
-        # Ensure entity_type is a string value for storage
-        entity_type = auth.entity_type.value if hasattr(auth.entity_type, "value") else auth.entity_type
-
-        graph = Graph(
-            name=name,
-            document_ids=[doc.external_id for doc in document_objects],
-            filters=filters,
-            owner={"type": entity_type, "id": auth.entity_id},
-            access_control=access_control,
-        )
+        # Create a new graph
+        graph = Graph(name=name, document_ids=[doc.external_id for doc in document_objects], filters=filters)
 
         return graph
 
@@ -264,12 +244,12 @@ class MorphikGraphService:
             graph.system_metadata["status"] = "build_api_failed"
             # Attempt to store graph with failed status before re-raising
             try:
-                await self.db.store_graph(graph)
+                await self.db.store_graph(graph, auth)
             except Exception as db_exc:
                 logger.error(f"Failed to store graph {graph.id} with build_api_failed status: {db_exc}")
             raise
 
-        if not await self.db.store_graph(graph):
+        if not await self.db.store_graph(graph, auth):
             # This case might be redundant if the above block handles storing on failure/success appropriately
             # For now, ensure it's stored after successful API call.
             raise Exception("Failed to store graph in the database after API build call")
@@ -531,7 +511,8 @@ class MorphikGraphService:
         end_user_id: Optional[str] = None,  # For document_service and CompletionRequest
         hop_depth: Optional[int] = None,  # maintain signature
         include_paths: Optional[bool] = None,  # maintain signature
-    ) -> CompletionResponse:
+        stream_response: Optional[bool] = False,  # Add stream_response parameter
+    ) -> Union[CompletionResponse, tuple[AsyncGenerator[str, None], List[ChunkSource]]]:
         """Generate completion using combined context from an external graph API and standard document retrieval.
 
         1. Retrieves a context string from the external graph API via /retrieval.
@@ -554,9 +535,10 @@ class MorphikGraphService:
             system_filters: System filters for retrieving the graph for external API.
             folder_name: Folder name for scoping standard retrieval and completion.
             end_user_id: End user ID for scoping standard retrieval and completion.
+            stream_response: Whether to return a streaming response.
 
         Returns:
-            CompletionResponse: The generated completion response.
+            CompletionResponse or tuple of (AsyncGenerator, List[ChunkSource]) for streaming.
         """
         graph_api_context_str = ""
         try:
@@ -647,18 +629,23 @@ class MorphikGraphService:
             prompt_template=custom_prompt_template,
             folder_name=folder_name,
             end_user_id=end_user_id,
+            stream_response=stream_response,
         )
 
         try:
             response = await self.completion_model.complete(completion_req)
         except Exception as e:
             logger.error(f"Error during completion generation: {e}")
-            return CompletionResponse(text="", error=f"Failed to generate completion: {e}")
+            if stream_response:
+                # Return empty stream and sources for error case
+                async def empty_stream():
+                    yield ""
 
-        # Add sources information from the standard_chunks_results
-        if hasattr(response, "sources") and response.sources is None:
-            response.sources = []  # Ensure sources is a list if None
+                return (empty_stream(), [])
+            else:
+                return CompletionResponse(text="", error=f"Failed to generate completion: {e}")
 
+        # Prepare sources from standard chunks
         response_sources = [
             ChunkSource(
                 document_id=chunk.document_id,
@@ -667,19 +654,29 @@ class MorphikGraphService:
             )
             for chunk in standard_chunks_results
         ]
-        # If response already has sources, this will overwrite. If it should append, logic needs change.
-        response.sources = response_sources
 
-        # Add metadata about retrieval
-        if not hasattr(response, "metadata") or response.metadata is None:
-            response.metadata = {}
+        # Handle streaming vs non-streaming responses
+        if stream_response:
+            # For streaming, response should be an async generator
+            return (response, response_sources)
+        else:
+            # Add sources information from the standard_chunks_results
+            if hasattr(response, "sources") and response.sources is None:
+                response.sources = []  # Ensure sources is a list if None
 
-        response.metadata["retrieval_info"] = {
-            "graph_api_context_used": bool(graph_api_context_str and graph_api_context_str.strip()),
-            "standard_chunks_retrieved": len(standard_chunks_results),
-        }
+            # If response already has sources, this will overwrite. If it should append, logic needs change.
+            response.sources = response_sources
 
-        return response
+            # Add metadata about retrieval
+            if not hasattr(response, "metadata") or response.metadata is None:
+                response.metadata = {}
+
+            response.metadata["retrieval_info"] = {
+                "graph_api_context_used": bool(graph_api_context_str and graph_api_context_str.strip()),
+                "standard_chunks_retrieved": len(standard_chunks_results),
+            }
+
+            return response
 
     async def check_workflow_status(
         self,
@@ -718,3 +715,47 @@ class MorphikGraphService:
             logger.error(f"Failed to check workflow status for {workflow_id}: {e}")
             # Return failed status instead of raising
             return {"status": "failed", "error": str(e)}
+
+    async def delete_graph(
+        self,
+        graph_name: str,
+        auth: AuthContext,
+        system_filters: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Delete a graph and its associated data from the external graph API.
+
+        Args:
+            graph_name: Name of the graph to delete
+            auth: Authentication context
+            system_filters: Optional system metadata filters
+
+        Returns:
+            bool: True if deletion was successful, False otherwise
+        """
+        try:
+            # Find the graph to get its ID
+            graph = await self._find_graph(graph_name, auth, system_filters)
+            graph_id = graph.id
+
+            # Call the external graph delete service
+            api_response = await self._make_api_request(
+                method="DELETE",
+                endpoint=f"/delete/{graph_id}",
+                auth=auth,
+            )
+            logger.info(f"Graph delete API call for graph_id {graph_id} successful. Response: {api_response}")
+
+            # Delete the graph from our database
+            success = await self.db.delete_graph(graph_name, auth)
+            if not success:
+                logger.error(f"Failed to delete graph '{graph_name}' from database after successful API deletion")
+                return False
+
+            return True
+
+        except ValueError as e:
+            logger.error(f"Graph '{graph_name}' not found: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to delete graph '{graph_name}': {e}")
+            raise

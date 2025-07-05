@@ -26,12 +26,16 @@ from core.embedding.litellm_embedding import LiteLLMEmbeddingModel
 from core.parser.morphik_parser import MorphikParser
 from core.reranker.flag_reranker import FlagReranker
 from core.services.document_service import DocumentService
+from core.services.workflow_service import WorkflowService
 from core.storage.local_storage import LocalStorage
 from core.storage.s3_storage import S3Storage
+from core.vector_store.dual_multivector_store import DualMultiVectorStore
+from core.vector_store.fast_multivector_store import FastMultiVectorStore
 from core.vector_store.multi_vector_store import MultiVectorStore
 from core.vector_store.pgvector_store import PGVectorStore
 
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Global settings
@@ -127,10 +131,60 @@ match settings.COLPALI_MODE:
         colpali_vector_store = None
     case "local":
         colpali_embedding_model = ColpaliEmbeddingModel()
-        colpali_vector_store = MultiVectorStore(uri=settings.POSTGRES_URI)
+        # Choose multivector store implementation based on provider and dual ingestion setting
+        if settings.ENABLE_DUAL_MULTIVECTOR_INGESTION:
+            # Dual ingestion mode: create both stores and wrap them
+            if not settings.TURBOPUFFER_API_KEY:
+                raise ValueError("TURBOPUFFER_API_KEY is required when dual ingestion is enabled")
+
+            fast_store = FastMultiVectorStore(
+                uri=settings.POSTGRES_URI, tpuf_api_key=settings.TURBOPUFFER_API_KEY, namespace="public"
+            )
+            slow_store = MultiVectorStore(
+                uri=settings.POSTGRES_URI, enable_external_storage=True, auto_initialize=False
+            )
+            colpali_vector_store = DualMultiVectorStore(
+                fast_store=fast_store, slow_store=slow_store, enable_dual_ingestion=True
+            )
+            logger.info("Initialized DualMultiVectorStore for migration (dual ingestion enabled)")
+        elif settings.MULTIVECTOR_STORE_PROVIDER == "morphik":
+            if not settings.TURBOPUFFER_API_KEY:
+                raise ValueError("TURBOPUFFER_API_KEY is required when using morphik multivector store provider")
+            colpali_vector_store = FastMultiVectorStore(
+                uri=settings.POSTGRES_URI, tpuf_api_key=settings.TURBOPUFFER_API_KEY, namespace="public"
+            )
+        else:
+            colpali_vector_store = MultiVectorStore(
+                uri=settings.POSTGRES_URI, enable_external_storage=True, auto_initialize=False
+            )
     case "api":
         colpali_embedding_model = ColpaliApiEmbeddingModel()
-        colpali_vector_store = MultiVectorStore(uri=settings.POSTGRES_URI)
+        # Choose multivector store implementation based on provider and dual ingestion setting
+        if settings.ENABLE_DUAL_MULTIVECTOR_INGESTION:
+            # Dual ingestion mode: create both stores and wrap them
+            if not settings.TURBOPUFFER_API_KEY:
+                raise ValueError("TURBOPUFFER_API_KEY is required when dual ingestion is enabled")
+
+            fast_store = FastMultiVectorStore(
+                uri=settings.POSTGRES_URI, tpuf_api_key=settings.TURBOPUFFER_API_KEY, namespace="public"
+            )
+            slow_store = MultiVectorStore(
+                uri=settings.POSTGRES_URI, enable_external_storage=True, auto_initialize=False
+            )
+            colpali_vector_store = DualMultiVectorStore(
+                fast_store=fast_store, slow_store=slow_store, enable_dual_ingestion=True
+            )
+            logger.info("Initialized DualMultiVectorStore for migration (dual ingestion enabled)")
+        elif settings.MULTIVECTOR_STORE_PROVIDER == "morphik":
+            if not settings.TURBOPUFFER_API_KEY:
+                raise ValueError("TURBOPUFFER_API_KEY is required when using morphik multivector store provider")
+            colpali_vector_store = FastMultiVectorStore(
+                uri=settings.POSTGRES_URI, tpuf_api_key=settings.TURBOPUFFER_API_KEY, namespace="public"
+            )
+        else:
+            colpali_vector_store = MultiVectorStore(
+                uri=settings.POSTGRES_URI, enable_external_storage=True, auto_initialize=False
+            )
     case _:
         raise ValueError(f"Unsupported COLPALI_MODE: {settings.COLPALI_MODE}")
 
@@ -153,6 +207,13 @@ document_service = DocumentService(
 )
 logger.info("Document service initialised")
 
+# ---------------------------------------------------------------------------
+# Workflow service (Step-2)
+# ---------------------------------------------------------------------------
+
+workflow_service = WorkflowService(database=database, document_service_ref=document_service)
+logger.info("Workflow service initialised")
+
 __all__ = [
     "settings",
     "database",
@@ -161,4 +222,5 @@ __all__ = [
     "embedding_model",
     "completion_model",
     "document_service",
+    "workflow_service",
 ]
