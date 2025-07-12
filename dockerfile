@@ -31,6 +31,7 @@ ENV PATH="/app/.venv/bin:${PATH}"
 
 # Copy project definition and lock file
 COPY pyproject.toml uv.lock ./
+COPY fde ./fde
 
 # Create venv and install dependencies from lockfile (excluding the project itself initially for better caching)
 # This also creates the /app/.venv directory
@@ -51,6 +52,13 @@ RUN --mount=type=cache,target=${UV_CACHE_DIR} \
 # Cache buster: 1 - verbose flag added
 RUN --mount=type=cache,target=${UV_CACHE_DIR} \
     uv pip install --verbose 'colpali-engine@git+https://github.com/illuin-tech/colpali@80fb72c9b827ecdb5687a3a8197077d0d01791b3'
+
+# Enable backports and install GCC 11+ for Debian Bookworm
+RUN echo "deb http://deb.debian.org/debian bookworm-backports main" > /etc/apt/sources.list.d/backports.list && \
+    apt-get update && \
+    apt-get install -y -t bookworm-backports gcc-11 g++-11 && \
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-11 100 && \
+    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 100
 
 # Cache buster: 1 - verbose flag already present
 RUN --mount=type=cache,target=${UV_CACHE_DIR} \
@@ -90,6 +98,9 @@ COPY --from=builder /bin/uvx /bin/uvx
 # Copy NLTK data from builder
 COPY --from=builder /usr/local/share/nltk_data /usr/local/share/nltk_data
 
+## copy fde package to avoid error at server startup
+COPY --from=builder /app/fde ./fde
+
 # Create necessary directories
 RUN mkdir -p storage logs
 
@@ -101,48 +112,7 @@ ENV VIRTUAL_ENV=/app/.venv
 ENV PATH="/app/.venv/bin:/usr/local/bin:${PATH}"
 
 # Create default configuration
-RUN echo '[api]\n\
-host = "0.0.0.0"\n\
-port = 8000\n\
-reload = false\n\
-\n\
-[auth]\n\
-jwt_algorithm = "HS256"\n\
-dev_mode = true\n\
-dev_entity_id = "dev_user"\n\
-dev_entity_type = "developer"\n\
-dev_permissions = ["read", "write", "admin"]\n\
-\n\
-[completion]\n\
-provider = "ollama"\n\
-model_name = "llama2"\n\
-base_url = "http://localhost:11434"\n\
-\n\
-[database]\n\
-provider = "postgres"\n\
-\n\
-[embedding]\n\
-provider = "ollama"\n\
-model_name = "nomic-embed-text"\n\
-dimensions = 768\n\
-similarity_metric = "cosine"\n\
-base_url = "http://localhost:11434"\n\
-\n\
-[parser]\n\
-chunk_size = 1000\n\
-chunk_overlap = 200\n\
-use_unstructured_api = false\n\
-\n\
-[reranker]\n\
-use_reranker = false\n\
-\n\
-[storage]\n\
-provider = "local"\n\
-storage_path = "/app/storage"\n\
-\n\
-[vector_store]\n\
-provider = "pgvector"\n\
-' > /app/morphik.toml.default
+COPY morphik.docker.toml /app/morphik.toml.default
 
 # Create startup script
 RUN echo '#!/bin/bash\n\
@@ -194,8 +164,11 @@ fi\n\
 
 # Copy application code
 # pyproject.toml is needed for uv to identify the project context for `uv run`
-COPY pyproject.toml ./
-COPY core ./core
+COPY pyproject.toml uv.lock ./
+
+## copy the fde package also to fix distribution not found error
+COPY fde ./fde
+
 COPY ee ./ee
 COPY README.md LICENSE ./
 # Assuming start_server.py is at the root of your project

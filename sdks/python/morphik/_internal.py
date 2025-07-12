@@ -20,6 +20,7 @@ from .models import (
     Graph,
     GraphPromptOverrides,
     IngestTextRequest,
+    QueryPromptOverrides,
 )
 from .rules import Rule
 
@@ -248,13 +249,19 @@ class _MorphikClientLogic:
         graph_name: Optional[str],
         hop_depth: int,
         include_paths: bool,
-        prompt_overrides: Optional[Dict],
+        prompt_overrides: Optional[Union[QueryPromptOverrides, Dict[str, Any]]],
         folder_name: Optional[Union[str, List[str]]],
         end_user_id: Optional[str],
         chat_id: Optional[str] = None,
         schema: Optional[Union[Type[BaseModel], Dict[str, Any]]] = None,
+        llm_config: Optional[Dict[str, Any]] = None,
+        padding: int = 0,
     ) -> Dict[str, Any]:
         """Prepare request for query endpoint"""
+        # Convert prompt_overrides to dict if it's a model
+        if prompt_overrides and isinstance(prompt_overrides, QueryPromptOverrides):
+            prompt_overrides = prompt_overrides.model_dump(exclude_none=True)
+
         payload = {
             "query": query,
             "filters": filters,
@@ -274,6 +281,10 @@ class _MorphikClientLogic:
             payload["end_user_id"] = end_user_id
         if chat_id:
             payload["chat_id"] = chat_id
+        if llm_config:
+            payload["llm_config"] = llm_config
+        if padding > 0:
+            payload["padding"] = padding
 
         # Add schema to payload if provided
         if schema:
@@ -300,6 +311,7 @@ class _MorphikClientLogic:
         use_colpali: bool,
         folder_name: Optional[Union[str, List[str]]],
         end_user_id: Optional[str],
+        padding: int = 0,
     ) -> Dict[str, Any]:
         """Prepare request for retrieve_chunks endpoint"""
         request = {
@@ -313,6 +325,8 @@ class _MorphikClientLogic:
             request["folder_name"] = folder_name
         if end_user_id:
             request["end_user_id"] = end_user_id
+        if padding > 0:
+            request["padding"] = padding
         return request
 
     def _prepare_retrieve_docs_request(

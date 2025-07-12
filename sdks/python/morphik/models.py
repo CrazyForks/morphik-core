@@ -317,7 +317,7 @@ class Graph(BaseModel):
     def error(self) -> str | None:
         return self.system_metadata.get("error") if self.system_metadata else None
 
-    def wait_for_completion(self, timeout_seconds: int = 300, check_interval_seconds: int = 5) -> "Graph":
+    def wait_for_completion(self, timeout_seconds: int = 300, check_interval_seconds: int = 2) -> "Graph":
         """Poll the server until the graph processing is finished."""
         import time
 
@@ -498,7 +498,11 @@ class FolderInfo(BaseModel):
     id: str = Field(..., description="Unique folder identifier")
     name: str = Field(..., description="Folder name")
     description: Optional[str] = Field(None, description="Folder description")
-    owner: Dict[str, str] = Field(..., description="Owner information")
-    document_ids: List[str] = Field(default_factory=list, description="IDs of documents in the folder")
+    owner: Optional[Dict[str, str]] = Field(default_factory=dict, description="Owner information")
+    document_ids: Optional[List[str]] = Field(default_factory=list, description="IDs of documents in the folder")
     system_metadata: Dict[str, Any] = Field(default_factory=dict, description="System-managed metadata")
-    access_control: Dict[str, List[str]] = Field(default_factory=dict, description="Access control information")
+    rules: List[Dict[str, Any]] = Field(default_factory=list, description="Rules associated with the folder")
+    workflow_ids: List[str] = Field(default_factory=list, description="Workflow IDs associated with the folder")
+    app_id: Optional[str] = Field(None, description="Application ID associated with the folder")
+    end_user_id: Optional[str] = Field(None, description="End user ID associated with the folder")
+    access_control: Optional[Dict[str, List[str]]] = Field(default_factory=dict, description="Access control information")

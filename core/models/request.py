@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, List, Literal, Optional, Type, Union
 
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,11 @@ class RetrieveRequest(BaseModel):
     min_score: float = Field(default=0.0)
     use_reranking: Optional[bool] = None  # If None, use default from config
     use_colpali: Optional[bool] = None
+    padding: int = Field(
+        default=0,
+        ge=0,
+        description="Number of additional chunks/pages to retrieve before and after matched chunks (ColPali only)",
+    )
     graph_name: Optional[str] = Field(
         None, description="Name of the graph to use for knowledge graph-enhanced retrieval"
     )
@@ -47,6 +52,10 @@ class CompletionQueryRequest(RetrieveRequest):
     stream_response: Optional[bool] = Field(
         False,
         description="Whether to stream the response back in chunks",
+    )
+    llm_config: Optional[Dict[str, Any]] = Field(
+        None,
+        description="LiteLLM-compatible model configuration (e.g., model name, API key, base URL)",
     )
 
 
@@ -151,3 +160,11 @@ class AgentQueryRequest(BaseModel):
     """Request model for agent queries"""
 
     query: str = Field(..., description="Natural language query for the Morphik agent")
+    chat_id: Optional[str] = Field(
+        None,
+        description="Optional chat session ID for persisting conversation history",
+    )
+    display_mode: Literal["formatted", "raw"] = Field(
+        default="formatted",
+        description="Display mode for images: 'formatted' (default) creates bounding boxes with Gemini, 'raw' returns uncropped images",
+    )
