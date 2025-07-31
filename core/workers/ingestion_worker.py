@@ -594,7 +594,9 @@ async def process_ingestion_job(
                 logger.info("No text chunking needed - ColPali will create image-based chunks")
             else:
                 # Normal text chunking required
-                parsed_chunks = await document_service.parser.split_text(text)
+                # Use semantic chunking when ColPali is NOT being used for this request
+                use_semantic = not using_colpali
+                parsed_chunks = await document_service.parser.split_text(text, use_semantic_for_request=use_semantic)
                 if not parsed_chunks:
                     logger.warning(
                         "No text chunks extracted after parsing. Will attempt to continue "

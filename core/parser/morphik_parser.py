@@ -10,6 +10,7 @@ from unstructured.partition.auto import partition
 
 from core.models.chunk import Chunk
 from core.parser.base_parser import BaseParser
+from core.parser.semantic_text_splitter import SemanticTextSplitter
 from core.parser.video.parse_video import VideoParser, load_config
 from core.parser.xml_chunker import XMLChunker
 
@@ -97,6 +98,21 @@ class RecursiveCharacterTextSplitter:
                 overlapped.append(chunk)
             return overlapped
         return final_chunks
+
+
+class SemanticChunker(BaseChunker):
+    """Semantic chunking using the chonkie library and optionally Gemini for context"""
+
+    def __init__(
+        self, chunk_size: int, chunk_overlap: int, model: str = "gpt-4o-mini", use_contextual_chunks: bool = True
+    ):
+        # Note: chunk_overlap is not used in semantic chunking but kept for interface compatibility
+        self.semantic_splitter = SemanticTextSplitter(
+            chunk_size=chunk_size, model=model, use_contextual_chunks=use_contextual_chunks
+        )
+
+    def split_text(self, text: str) -> List[Chunk]:
+        return self.semantic_splitter.split(text)
 
 
 class ContextualChunker(BaseChunker):
@@ -208,11 +224,23 @@ class MorphikParser(BaseParser):
         self.frame_sample_rate = frame_sample_rate
         self.settings = settings
 
-        # Initialize chunker based on configuration
+        # Always create standard and semantic chunkers for per-request flexibility
+        self._standard_chunker = StandardChunker(chunk_size, chunk_overlap)
+        self._semantic_chunker = SemanticChunker(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            use_contextual_chunks=True,  # Will automatically disable if no API key
+        )
+
+        # Initialize default chunker based on configuration
+        # This is used when no per-request override is provided
         if use_contextual_chunking:
             self.chunker = ContextualChunker(chunk_size, chunk_overlap, anthropic_api_key)
+            logger.info("Default chunking strategy: contextual")
         else:
-            self.chunker = StandardChunker(chunk_size, chunk_overlap)
+            # Default to standard chunking
+            self.chunker = self._standard_chunker
+            logger.info("Default chunking strategy: standard")
 
         # Initialize logger
         self.logger = logging.getLogger(__name__)
@@ -349,6 +377,26 @@ class MorphikParser(BaseParser):
         """Public method to check if file is XML."""
         return self._is_xml_file(filename, content_type)
 
-    async def split_text(self, text: str) -> List[Chunk]:
-        """Split text into chunks using configured chunking strategy"""
+    async def split_text(self, text: str, use_semantic_for_request: Optional[bool] = None) -> List[Chunk]:
+        """Split text into chunks using configured chunking strategy.
+
+        Args:
+            text: The text to split into chunks
+            use_semantic_for_request: Override for whether to use semantic chunking for this request.
+                                    If True and semantic chunking is available, use it.
+                                    If None, use the default chunker configured at initialization.
+        """
+        # If we have a per-request override for semantic chunking
+        if use_semantic_for_request is not None and hasattr(self, "_semantic_chunker"):
+            if use_semantic_for_request:
+                # Use semantic chunker for this request
+                logger.info("Using semantic chunking for this request (per-request override)")
+                return self._semantic_chunker.split_text(text)
+            else:
+                # Explicitly don't use semantic chunking - fall back to standard
+                if hasattr(self, "_standard_chunker"):
+                    logger.info("Using standard chunking for this request (per-request override)")
+                    return self._standard_chunker.split_text(text)
+
+        # Otherwise use the default chunker configured at initialization
         return self.chunker.split_text(text)
